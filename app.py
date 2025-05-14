@@ -5,7 +5,7 @@ import sys
 from datetime import datetime, timedelta
 from market_analysis import (
     MarketAnalysis, CONFIG,
-    MT5DataProvider, PDFReportGenerator
+    YFinanceDataProvider, PDFReportGenerator
 )
 import pytz
 import subprocess
@@ -316,6 +316,7 @@ def export_pdf_report(analysis_results):
         logger.error(f"Failed to generate PDF: {str(e)}")
         st.error(f"Failed to generate PDF report: {str(e)}")
 
+
 def main():
     # Set page config
     st.set_page_config(
@@ -328,21 +329,20 @@ def main():
     # Apply custom CSS
     local_css()
 
-    # Sidebar for inputs
     with st.sidebar:
         st.title("⚙️ Analysis Parameters")
         st.markdown("---")
         
         try:
-            data_provider = MT5DataProvider()
-        except ConnectionError as e:
-            logger.error(f"Failed to initialize MT5: {e}")
-            st.error("Failed to connect to MetaTrader 5. Please ensure it is running.")
+            data_provider = YFinanceDataProvider()
+        except Exception as e:
+            logger.error(f"Failed to initialize data provider: {e}")
+            st.error("Failed to initialize data provider.")
             return
 
         symbol = st.selectbox("Symbol:", CONFIG.get("data", {}).get("symbols", []))
         timeframe = st.selectbox("Timeframe:", 
-                               list(CONFIG.get("data", {}).get("timeframe_mapping", {}).keys()), 
+                                list(CONFIG.get("data", {}).get("timeframe_mapping", {}).keys()), 
                                index=2 if len(CONFIG.get("data", {}).get("timeframe_mapping", {})) > 2 else 0)
         
         period = st.selectbox("Period:", 
@@ -385,9 +385,11 @@ def main():
         st.markdown("---")
         st.subheader("📤 Export Results")
         export_pdf_report(st.session_state['analysis_results'])
-
+        
     # Add some info in the sidebar
     with st.sidebar:
+        st.markdown("---")
+        st.markdown("**Developed by SnooG Analytics**")
         st.markdown("---")
         st.markdown("**About This Tool**")
         st.markdown("""

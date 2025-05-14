@@ -1,10 +1,10 @@
 import logging
 import pandas as pd
 import numpy as np
-import talib
+import pandas_ta as ta
 from datetime import datetime, time, timedelta
 import pytz
-import MetaTrader5 as mt5
+import yfinance as yf
 from typing import Dict, List, Any
 from reports import PDFReportGenerator
 
@@ -21,16 +21,16 @@ logger = logging.getLogger(__name__)
 # Configuration
 CONFIG = {
     "data": {
-        "source": "mt5",
-        "symbols": ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "GBPJPY", "AUDUSD", "NZDUSD"],
+        "source": "yfinance",
+        "symbols": ["XAUUSD=X", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "GBPJPY=X", "AUDUSD=X", "NZDUSD=X"],
         "timeframe_mapping": {
-            "M1": mt5.TIMEFRAME_M1,
-            "M5": mt5.TIMEFRAME_M5,
-            "M15": mt5.TIMEFRAME_M15,
-            "M30": mt5.TIMEFRAME_M30,
-            "H1": mt5.TIMEFRAME_H1,
-            "H4": mt5.TIMEFRAME_H4,
-            "D1": mt5.TIMEFRAME_D1
+            "M1": "1m",
+            "M5": "5m",
+            "M15": "15m",
+            "M30": "30m",
+            "H1": "1h",
+            "H4": "4h",
+            "D1": "1d"
         }
     },
     "sessions": { #Kenya sessions
@@ -46,39 +46,32 @@ CONFIG = {
     }
 }
 
-class MT5DataProvider:
-    """Handles connection and data retrieval from MetaTrader 5."""
+class YFinanceDataProvider:
+    """Handles data retrieval from Yahoo Finance."""
     def __init__(self):
-        if not mt5.initialize():
-            logger.error("Failed to initialize MT5 connection")
-            raise ConnectionError("MT5 initialization failed")
-        logger.info("MT5 connection established")
-
-    def __del__(self):
-        mt5.shutdown()
-        logger.info("MT5 connection closed")
+        logger.info("YFinance data provider initialized")
 
     def fetch_data(self, symbol: str, start_date: datetime, end_date: datetime, timeframe: str) -> pd.DataFrame:
-        """Fetches market data from MT5 for the specified symbol and timeframe."""
+        """Fetches market data from Yahoo Finance for the specified symbol and timeframe."""
         try:
             if timeframe not in CONFIG["data"]["timeframe_mapping"]:
                 raise ValueError(f"Unsupported timeframe: {timeframe}")
             
-            mt5_timeframe = CONFIG["data"]["timeframe_mapping"][timeframe]
-            rates = mt5.copy_rates_range(symbol, mt5_timeframe, start_date, end_date)
+            yf_timeframe = CONFIG["data"]["timeframe_mapping"][timeframe]
+            df = yf.download(symbol, start=start_date, end=end_date, interval=yf_timeframe)
             
-            if rates is None or len(rates) == 0:
+            if df.empty:
                 raise ValueError(f"No data returned for {symbol}")
             
-            df = pd.DataFrame(rates)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
             df = df.rename(columns={
-                'open': 'Open',
-                'high': 'High',
-                'low': 'Low',
-                'close': 'Close',
-                'tick_volume': 'Volume'
+                'Open': 'Open',
+                'High': 'High',
+                'Low': 'Low',
+                'Close': 'Close',
+                'Volume': 'Volume'
             })
+            df['time'] = df.index
+            df = df.reset_index(drop=True)
             
             required_columns = ["Open", "High", "Low", "Close", "Volume"]
             missing = [col for col in required_columns if col not in df.columns]
@@ -108,11 +101,11 @@ class TechnicalIndicators:
     def _calculate_trend_indicators(self):
         close = self.data['Close']
         
-        ma_50 = talib.SMA(close, timeperiod=50)
-        ma_200 = talib.SMA(close, timeperiod=200)
+        ma_50 = ta.sma(close, length=50)
+        ma_200 = ta.sma(close, length=200)
         ma_50_cross = "Bullish" if ma_50.iloc[-1] > ma_200.iloc[-1] else "Bearish"
         
-        adx = talib.ADX(self.data['High'], self.data['Low'], close, timeperiod=14)
+        adx = ta.adx(self.data['High'], self.data['Low'], close, length=14)['ADX_14']
         
         self.indicators.update({
             "Trend": {
@@ -127,23 +120,26 @@ class TechnicalIndicators:
     def _calculate_momentum_indicators(self):
         close = self.data['Close']
         
-        rsi = talib.RSI(close, timeperiod=14)
+        rsi = ta.rsi(close, length=14)
         rsi_value = rsi.iloc[-1]
         rsi_signal = "Overbought" if rsi_value > 70 else "Oversold" if rsi_value < 30 else "Neutral"
         
-        macd, signal, _ = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
-        macd_signal = "Bullish" if macd.iloc[-1] > signal.iloc[-1] else "Bearish"
+        macd = ta.macd(close, fast=12, slow=26, signal=9)
+        macd_line = macd['MACD_12_26_9']
+        signal_line = macd['MACDs_12_26_9']
+        macd_signal = "Bullish" if macd_line.iloc[-1] > signal_line.iloc[-1] else "Bearish"
         
-        slowk, slowd = talib.STOCH(self.data['High'], self.data['Low'], close, 
-                                  fastk_period=14, slowk_period=3, slowd_period=3)
+        stoch = ta.stoch(self.data['High'], self.data['Low'], close, k=14, d=3, smooth_k=3)
+        slowk = stoch['STOCHk_14_3_3']
+        slowd = stoch['STOCHd_14_3_3']
         stoch_signal = "Overbought" if slowk.iloc[-1] > 80 else "Oversold" if slowk.iloc[-1] < 20 else "Neutral"
         
         self.indicators.update({
             "Momentum": {
                 "RSI": rsi_value,
                 "RSI_Signal": rsi_signal,
-                "MACD": macd.iloc[-1],
-                "MACD_Signal": signal.iloc[-1],
+                "MACD": macd_line.iloc[-1],
+                "MACD_Signal": signal_line.iloc[-1],
                 "MACD_Direction": macd_signal,
                 "Stochastic_K": slowk.iloc[-1],
                 "Stochastic_D": slowd.iloc[-1],
@@ -154,10 +150,13 @@ class TechnicalIndicators:
     def _calculate_volatility_indicators(self):
         close = self.data['Close']
         
-        upper, middle, lower = talib.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+        bbands = ta.bbands(close, length=20, std=2)
+        upper = bbands['BBU_20_2.0']
+        middle = bbands['BBM_20_2.0']
+        lower = bbands['BBL_20_2.0']
         bb_width = (upper - lower) / middle * 100
         
-        atr = talib.ATR(self.data['High'], self.data['Low'], close, timeperiod=14)
+        atr = ta.atr(self.data['High'], self.data['Low'], close, length=14)
         
         self.indicators.update({
             "Volatility": {
@@ -184,7 +183,7 @@ class TechnicalIndicators:
 
 class SessionAnalyzer:
     """Analyzes trading sessions for performance metrics."""
-    def __init__(self, symbol: str, data_provider: MT5DataProvider):
+    def __init__(self, symbol: str, data_provider: YFinanceDataProvider):
         self.symbol = symbol
         self.data_provider = data_provider
         self.sessions = CONFIG["sessions"]
@@ -209,7 +208,7 @@ class SessionAnalyzer:
         return "No Session"
 
     def analyze_sessions(self) -> pd.DataFrame:
-        """Analyzes session performance metrics."""
+        """Analyzes performance metrics."""
         if self.data is None:
             raise ValueError("No data loaded. Call fetch_data() first.")
             
@@ -235,7 +234,7 @@ class SessionAnalyzer:
         
         atr_values = []
         for _, group in valid_sessions.groupby(["Date", "Session"]):
-            atr = talib.ATR(group["High"], group["Low"], group["Close"], timeperiod=14)
+            atr = ta.atr(group["High"], group["Low"], group["Close"], length=14)
             atr_values.append(atr.iloc[-1] if not atr.empty else np.nan)
         metrics["ATR"] = atr_values
         
@@ -393,7 +392,7 @@ class MarketAnalysis:
         self.timeframe = timeframe
         self.start_date = start_date
         self.end_date = end_date
-        self.data_provider = MT5DataProvider()
+        self.data_provider = YFinanceDataProvider()
         self.strategy = TradingStrategy()
         self.session_analyzer = SessionAnalyzer(symbol, self.data_provider)
         self.data = None
@@ -405,7 +404,7 @@ class MarketAnalysis:
             logger.info(f"Starting analysis for {self.symbol} ({self.timeframe}) from {self.start_date} to {self.end_date}")
             
             self.data = self.session_analyzer.fetch_data(self.start_date, self.end_date, self.timeframe)
-            if self.data.empty:
+            if self.data is None or self.data.empty:
                 raise ValueError(f"No data available for {self.symbol}")
                 
             indicators = TechnicalIndicators(self.data).calculate_all()

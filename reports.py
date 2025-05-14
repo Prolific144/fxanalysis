@@ -2,21 +2,19 @@ import logging
 from typing import List, Any, Dict
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak,
-    KeepTogether, LongTable, FrameBreak
+    Paragraph, Spacer, Table, TableStyle, Image, PageBreak,
+    KeepTogether, LongTable
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib import colors
 from reportlab.lib.units import inch
-from reportlab.rl_config import defaultPageSize
 from reportlab.platypus import PageTemplate, BaseDocTemplate, Frame
-from reportlab.lib.utils import ImageReader
 from io import BytesIO
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-import talib
+import pandas_ta as ta
 
 # Set up logging
 logging.basicConfig(
@@ -207,11 +205,9 @@ class PDFReportGenerator:
         
         try:
             logo = Image(PDF_CONFIG["logo_path"], width=2*inch, height=1*inch)
-            elements.append(Spacer(1, 0.5*inch))
-            elements.append(KeepTogether(logo))
-            elements.append(Spacer(1, 0.5*inch))
-        except:
-            logger.warning("Logo file not found, skipping logo in PDF")
+            elements.extend([Spacer(1, 0.5*inch), KeepTogether(logo), Spacer(1, 0.5*inch)])
+        except FileNotFoundError:
+            logger.warning("Logo file not found, skipping logo")
         
         title = Paragraph(
             f"MARKET ANALYSIS REPORT<br/>{self.analysis['metadata']['symbol']}",
@@ -530,82 +526,85 @@ class PDFReportGenerator:
     def _create_charts_section(self) -> List[Any]:
         elements = []
         elements.append(Paragraph("Price and Indicator Charts", self.styles['Header1']))
-        
+    
         try:
             data = self.analysis['data']
             if data is None or data.empty:
                 raise ValueError("No data available for chart generation")
-                
+            
             # Price chart with MA and Bollinger Bands
             price_elements = [
                 Paragraph("Price and Volume Analysis", self.styles['Header2']),
                 Spacer(1, 0.25*inch)
             ]
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=PDF_CONFIG["chart_size"], sharex=True, 
-                                         gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1})
-            
+                                        gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1})
+        
             ax1.plot(data['time'], data['Close'], label='Close Price', color='#2c3e50', linewidth=1.5)
-            ma_50 = talib.SMA(data['Close'], timeperiod=50)
-            ma_200 = talib.SMA(data['Close'], timeperiod=200)
+            ma_50 = ta.sma(data['Close'], length=50)
+            ma_200 = ta.sma(data['Close'], length=200)
             ax1.plot(data['time'], ma_50, label='MA50', color='#e67e22', linestyle='--')
             ax1.plot(data['time'], ma_200, label='MA200', color='#3498db', linestyle='--')
-            
-            upper, middle, lower = talib.BBANDS(data['Close'], timeperiod=20, nbdevup=2, nbdevdn=2)
+        
+            bbands = ta.bbands(data['Close'], length=20, std=2)
+            upper = bbands['BBU_20_2.0']
+            middle = bbands['BBM_20_2.0']
+            lower = bbands['BBL_20_2.0']
             ax1.fill_between(data['time'], upper, lower, color='gray', alpha=0.1, label='Bollinger Bands')
-            
+        
             ax1.set_title(f"{self.analysis['metadata']['symbol']} Price Analysis")
             ax1.set_ylabel("Price")
             ax1.legend(loc='upper left', fontsize=8)
             ax1.grid(True, linestyle='--', alpha=0.7)
-            
+        
             ax2.bar(data['time'], data['Volume'], color='#6c757d', alpha=0.6)
             ax2.set_ylabel("Volume")
             ax2.set_xlabel("Time")
             ax2.grid(True, linestyle='--', alpha=0.7)
-            
+        
             fig.subplots_adjust(left=0.15, right=0.85, top=0.9, bottom=0.15, hspace=0.1)
             img_data = BytesIO()
             fig.savefig(img_data, format='png', dpi=PDF_CONFIG["chart_dpi"], bbox_inches='tight')
             img_data.seek(0)
             plt.close()
-            
+        
             price_chart = Image(img_data, width=PDF_CONFIG["chart_size"][0]*inch, height=PDF_CONFIG["chart_size"][1]*inch)
             price_elements.append(price_chart)
             price_elements.append(Spacer(1, 0.25*inch))
             elements.append(KeepTogether(price_elements))
-            
+        
             # RSI chart
             rsi_elements = [
                 Paragraph("Relative Strength Index (RSI)", self.styles['Header2']),
                 Spacer(1, 0.25*inch)
             ]
+            rsi = ta.rsi(data['Close'], length=14)
             fig, ax = plt.subplots(figsize=PDF_CONFIG["chart_size"])
-            rsi = talib.RSI(data['Close'], timeperiod=14)
             ax.plot(data['time'], rsi, label='RSI', color='#2c3e50')
             ax.axhline(y=70, color='red', linestyle='--', label='Overbought', alpha=0.7)
             ax.axhline(y=30, color='green', linestyle='--', label='Oversold', alpha=0.7)
             ax.fill_between(data['time'], 70, 100, color='red', alpha=0.1)
             ax.fill_between(data['time'], 0, 30, color='green', alpha=0.1)
-            
+        
             ax.set_title(f"{self.analysis['metadata']['symbol']} RSI")
             ax.set_xlabel("Time")
             ax.set_ylabel("RSI")
             ax.set_ylim(0, 100)
             ax.legend(loc='upper left', fontsize=8)
             ax.grid(True, linestyle='--', alpha=0.7)
-            
+        
             fig.subplots_adjust(left=0.15, right=0.85, top=0.9, bottom=0.15)
             img_data = BytesIO()
             fig.savefig(img_data, format='png', dpi=PDF_CONFIG["chart_dpi"], bbox_inches='tight')
             img_data.seek(0)
             plt.close()
-            
+        
             rsi_chart = Image(img_data, width=PDF_CONFIG["chart_size"][0]*inch, height=PDF_CONFIG["chart_size"][1]*inch)
             rsi_elements.append(rsi_chart)
             elements.append(KeepTogether(rsi_elements))
-            
+        
         except Exception as e:
             logger.error(f"Error generating charts: {e}")
             elements.append(Paragraph("Could not generate charts", self.styles['BodyText']))
-        
+    
         return elements
